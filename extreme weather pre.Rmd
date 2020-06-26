@@ -1,0 +1,341 @@
+---
+title: "extreme weather"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+if(! require("rsample")){install.packages("rsample")}
+if(! require("rpart.plot")){install.packages("rpart.plot")}
+if(! require("dplyr")){install.packages("dplyr")}
+if(! require("imbalance")){install.packages("imbalance")}
+if(!require("ROSE")){install.packages("ROSE")}
+if(! require("leaps") ){ install.packages("leaps") }
+
+library(leaps)
+library(imbalance)
+library(ROSE)
+library(dplyr)
+library(rsample) 
+library(rpart.plot)
+
+if(! require("caret")){install.packages("caret")}
+library(caret)
+if(! require("car") ){ install.packages("car") }
+library(car)
+
+```
+
+```{r Confusion Matrix}
+confusionM <- function(x) {
+    accu=(x[1]+x[4])/(x[1]+x[2]+x[3]+x[4])
+    recall=x[1]/(x[1]+x[3])
+    precision = x[1]/(x[1]+x[2])
+    f_measure = (2*recall*precision)/(recall+precision)
+    result=list(accu,recall,precision,f_measure)
+    names(result)<-c("Accuracy","Recall","Precision","F Measure")
+    return (result)
+  }
+
+```
+
+
+## Data import, Normalize, and Clean.
+Actually c_Toronto has already been handled missing value problem. But it needs to scale and handle class imbalance. 
+```{r DataClean}
+c_Toronto<-read.csv("/Users/sunnysmac/Desktop/R code/historical-hourly-weather-data/c_Toronto.csv")
+
+# do normalization to the dataset. 
+normalize <- function(x) {
+    return ((x - min(x)) / (max(x) - min(x)))
+  }
+Norm_Toronto <- as.data.frame(lapply(select_if(c_Toronto,is.numeric), normalize))
+new_Toronto<-cbind(Norm_Toronto,c_Toronto[14])
+#head(new_Toronto)
+
+# Split train & test dataset. 
+set.seed(1)
+split<-initial_split(new_Toronto,prop=0.7) # Split train and test set 70%
+train<-training(split)
+test<-testing(split)
+# nrow(train)
+table(new_Toronto$is_extreme_weather)
+table(train$is_extreme_weather)
+# imbalance Ratio
+1068/44184    # 0.02417165
+#    No   Yes  train
+#  30917   759 
+#smoted_Toronto_train<-SMOTE(is_extreme_weather~year+Month+Mdat+Yday+Wday+hour+humidity+pressure+temperature+wind_direction+wind_speed,data =train,perc.over = 100)
+#table(smoted_Toronto_train$is_extreme_weather)
+```
+SMOTE: Synthetic Minority Over-sampling Technique. perc.over is how much you want to over sample. I give up to use smote method because it change the original normal data size, I cannot explain that. So I change to use over sampling method.
+
+```{r oversampling}
+over_train <- ROSE::ovun.sample(is_extreme_weather~year+Month+Mdat+Yday+Wday+hour+humidity+pressure+temperature+wind_direction+wind_speed,data =train, N=table(train$is_extreme_weather)[1] *2,seed = 1, method = "over")
+table(over_train[["data"]][["is_extreme_weather"]])
+toronto.train<-data.frame(over_train[["data"]])
+
+```
+
+If missing and method is either "over" or "under" this proportion is determined by oversampling or,respectively, undersampling examples so that the sample size is equal to N.
+
+```{r Feature Selection}
+# Best subset selection
+set.seed(1)
+fit_all = regsubsets(is_extreme_weather ~ ., data = toronto.train, nvmax = 11) 
+# nvmax is a tuning parameter specifying the maximum size of subsets to examine in the model. 
+fit_all_sum<-summary(fit_all)
+fit_all_sum
+names(fit_all_sum)
+fit_all_sum$bic
+```
+```{r}
+best.cp=which.min(fit_all_sum$cp)
+best.bic=which.min(fit_all_sum$bic)
+best.adj2=which.max(fit_all_sum$adjr2)
+
+best.cp
+best.bic
+best.adj2
+
+par(mfrow=c(2,2))
+#Plotting for Cp
+plot(fit_all_sum$cp, xlab = "Number of Variables", ylab = "Cp", type = 'b')
+points(best.cp, fit_all_sum$cp[best.cp], 
+       col = "orange", cex = 2, pch = 20)
+
+#Plotting for BIC
+plot(fit_all_sum$bic, xlab = "Number of Variables", ylab = "BIC", type = 'b')
+points(best.bic, fit_all_sum$bic[best.bic], 
+       col = "purple", cex = 2, pch = 20)
+
+#plotting for RSS and Adjusted R-Square. 
+plot(fit_all_sum$rss, xlab = "Number of Variables", ylab = "RSS", type = "b")
+plot(fit_all_sum$adjr2, xlab = "Number of Variables", ylab = "Adjusted RSq", type = "b")
+best_adj_r2 = which.max(fit_all_sum$adjr2) # 
+points(best.adj2, fit_all_sum$adjr2[best.adj2], col = "red",cex = 2, pch = 20)
+```
+```{r}
+coef(fit_all,8)
+#par(mfrow=c(3,1))
+plot(fit_all, scale='bic') 
+plot(fit_all,scale='Cp')
+plot(fit_all,scale='adjr2')
+# the optimal model associated with that bic is year, month, hour, humidity, pressure, temperature, wind direction, wind speed
+```
+
+# Build Model
+
+```{r Logistic Regreesion}
+if (!require("InformationValue")){install.packages("InformationValue")}
+library(InformationValue)
+
+if (!require("InformationValue")){install.packages("InformationValue")}
+library(InformationValue)
+
+# Build logistic regression Model
+lg.model <- glm(is_extreme_weather~year+Month+hour+humidity+pressure+temperature+wind_direction+wind_speed,family=binomial(link='logit'),data=toronto.train)
+summary(lg.model)
+#year, month, hour, humidity, pressure, temperature, wind direction, wind speed
+lg.predicted<-predict(lg.model,test,type="response")
+
+# Determine optimal prediction prpbability cutoff for the mode
+#optcutoff<-optimalCutoff(test$is_extreme_weather,lg.predicted)
+#optcutoff
+mean(lg.predicted)
+
+
+
+
+```
+I will write a confusion Matrix fuction to calculate the confusion matrix in convenience. 
+
+```{r}
+# Confusion Matrix
+predict_labels = rep("No", nrow(test))
+#class(predict_labels)
+predict_labels[lg.predicted>0.6]="Yes"
+predict_labels<-as.factor(predict_labels)
+#class(predict_labels)
+#levels(predict_labels)
+lg.table<-table(predict_labels,test$is_extreme_weather)
+result.lda=confusionM(lda.table)
+result.lda
+
+# K-fold Cross-Validation
+
+```
+```{r Logistc Regression}
+seedsCV = new_Toronto[sample(nrow(new_Toronto)),]
+folds<- cut(seq(1,nrow(new_Toronto)),breaks=10,labels=FALSE)
+
+
+#lda.predCV <- integer(length(folds))
+# initial accuarcy, Recall, Precision, F Measure. 
+accuracy.log<-c()
+recall.log<-c()
+precision.log<-c()
+f_measure.log<-c()
+for(i in 1:10){
+
+  testIndexes = which(folds==i,arr.ind=TRUE)
+  testData = seedsCV[testIndexes, ]
+  trainData = seedsCV[-testIndexes, ]
+  over_train <- ROSE::ovun.sample(is_extreme_weather~year+Month+Mdat+Yday+Wday+hour+humidity+pressure+temperature+wind_direction+wind_speed,data =trainData, N=table(trainData$is_extreme_weather)[1] *2,seed = 1, method = "over")
+  over_train.lda<-data.frame(over_train[["data"]])
+  ldamodel <-lda(is_extreme_weather~year+Month+Mdat+Yday+Wday+hour+humidity+pressure+temperature+wind_direction+wind_speed,data=over_train.lda)
+
+  lda.predCV=predict(ldamodel, newdata=testData)$class
+  #lda.predCV[testIndexes] <- predict(ldamodel, testData)$class
+  conf<-table(lda.predCV,testData$is_extreme_weather)
+  result=confusionM(conf)
+  accuracy.lda<-append(accuracy.lda,result[[1]])
+  recall.lda<-append(recall.lda,result[[2]])
+  precision.lda<-append(precision.lda,result[[3]])
+  f_measure.lda<-append(f_measure.lda,result[[4]])
+  #print(result)
+  #print(i)
+}
+
+accuracy.lda.mean<-mean(accuracy.lda)
+recall.lda.mean<-mean(recall.lda)
+precision.lda.mean<-mean(precision.lda)
+f_measure.lda.mean<-mean(f_measure.lda)
+
+accuracy.lda.mean
+recall.lda.mean
+precision.lda.mean
+f_measure.lda.mean
+```
+
+
+
+```{r LDA}
+if(!require("MASS")){install.packages("MASS")}
+library(MASS)
+lda.fit<-lda(is_extreme_weather~year+Month+hour+humidity+pressure+temperature+wind_direction+wind_speed, data=toronto.train)
+lda.fit
+lda.predict=predict(lda.fit, newdata=test)
+head(lda.predict$posterior)
+head(lda.predict$x)
+
+lda.table<-table(lda.predict$class,test$is_extreme_weather)
+result.lda=confusionM(lda.table)
+result.lda
+```
+```{r 10-CV LDA}
+set.seed(1)
+seedsCV = new_Toronto[sample(nrow(new_Toronto)),]
+folds<- cut(seq(1,nrow(new_Toronto)),breaks=10,labels=FALSE)
+
+
+#lda.predCV <- integer(length(folds))
+# initial accuarcy, Recall, Precision, F Measure. 
+accuracy.lda<-c()
+recall.lda<-c()
+precision.lda<-c()
+f_measure.lda<-c()
+
+for(i in 1:10){
+
+  testIndexes = which(folds==i,arr.ind=TRUE)
+  testData = seedsCV[testIndexes, ]
+  trainData = seedsCV[-testIndexes, ]
+  over_train <- ROSE::ovun.sample(is_extreme_weather~year+Month+Mdat+Yday+Wday+hour+humidity+pressure+temperature+wind_direction+wind_speed,data =trainData, N=table(trainData$is_extreme_weather)[1] *2,seed = 1, method = "over")
+  over_train.lda<-data.frame(over_train[["data"]])
+  ldamodel <-lda(is_extreme_weather~year+Month+Mdat+Yday+Wday+hour+humidity+pressure+temperature+wind_direction+wind_speed,data=over_train.lda)
+
+  lda.predCV=predict(ldamodel, newdata=testData)$class
+  #lda.predCV[testIndexes] <- predict(ldamodel, testData)$class
+  conf<-table(lda.predCV,testData$is_extreme_weather)
+  result=confusionM(conf)
+  accuracy.lda<-append(accuracy.lda,result[[1]])
+  recall.lda<-append(recall.lda,result[[2]])
+  precision.lda<-append(precision.lda,result[[3]])
+  f_measure.lda<-append(f_measure.lda,result[[4]])
+  #print(result)
+  #print(i)
+}
+
+accuracy.lda.mean<-mean(accuracy.lda)
+recall.lda.mean<-mean(recall.lda)
+precision.lda.mean<-mean(precision.lda)
+f_measure.lda.mean<-mean(f_measure.lda)
+
+accuracy.lda.mean
+recall.lda.mean
+precision.lda.mean
+f_measure.lda.mean
+```
+With do CV. 
+> accuracy.lda.mean
+[1] 0.7311722
+> recall.lda.mean
+[1] 0.9928021
+> precision.lda.mean
+[1] 0.7299726
+> f_measure.lda.mean
+[1] 0.8413181
+
+Without CV. 
+$Accuracy
+[1] 0.7255985
+
+$Recall
+[1] 0.9915455
+
+$Precision
+[1] 0.725264
+
+$`F Measure`
+[1] 0.8377543
+
+
+
+Build Model For QDA. 
+```{r QDA}
+qda.fit<-qda(is_extreme_weather~year+Month+hour+humidity+pressure+temperature+wind_direction+wind_speed, data=toronto.train)
+qda.fit
+qda.predict=predict(qda.fit, newdata=test)
+qda.table<-table(qda.predict$class,test$is_extreme_weather)
+result.qda=confusionM(qda.table)
+result.qda
+```
+
+
+Decision Tree
+
+```{r}
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(rpart)
+library(caret)
+tree<-rpart(is_extreme_weather~year+Month+hour+humidity+pressure+temperature+wind_direction+wind_speed,method='class',data =toronto.train) #grow tree
+printcp(tree) # display the results
+plot(tree) # visualize cv results. 
+text(tree)
+summary(tree) # summary of splits
+
+tree.prune<- prune(tree,cp= 0.010000 )
+plot(tree.prune)
+text(tree.prune)
+rpart.plot(tree)
+fancyRpartPlot(tree)
+
+result.tree<-predict(tree.prune,test)
+tree.predicted = rep("No", nrow(test))
+#class(predict_labels)
+tree.predicted[tree.predicted>0.5]="Yes"
+tree.predicted<-as.factor(tree.predicted)
+#class(predict_labels)
+#levels(predict_labels)
+tree.table<-table(tree.predicted,test$is_extreme_weather)
+tree.table
+result.tree=confusionM(tree.table)
+result.tree
+```
+
+
